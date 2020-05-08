@@ -9,6 +9,7 @@ class ClientProtocol(asyncio.Protocol):
     login: str
     server: 'Server'
     transport: transports.Transport
+    history = []
 
     def __init__(self, server: 'Server'):
         self.server = server
@@ -21,20 +22,34 @@ class ClientProtocol(asyncio.Protocol):
         if self.login is None:
             # login:User
             if decoded.startswith("login:"):
-                self.login = decoded.replace("login:", "").replace("\r\n", "")
-                self.transport.write(
-                    f"Привет, {self.login}!".encode()
-                )
+                new_login = decoded.replace("login:", "").replace("\r\n", "")
+                exists = False
+                for client in self.server.clients:
+                    if client.login == new_login:
+                        exists = True
+                        break
+                if exists:
+                    self.transport.write(
+                            f"Логин '{new_login}' занят, попробуйте другой".encode())
+                    self.transport.close()
+                else:
+                    self.login = new_login
+                    self.send_history(10)
+                    self.transport.write(f"Привет, {self.login}!".encode())
+                    self.send_to_all(f"Пользователь '{self.login}' подключился")
         else:
-            self.send_message(decoded)
+            self.save_to_history(self.send_message(decoded))
 
     def send_message(self, message):
         format_string = f"<{self.login}> {message}"
-        encoded = format_string.encode()
+        self.send_to_all(format_string)
 
+        return format_string
+
+    def send_to_all(self, message):
         for client in self.server.clients:
             if client.login != self.login:
-                client.transport.write(encoded)
+                client.transport.write(message.encode())
 
     def connection_made(self, transport: transports.Transport):
         self.transport = transport
@@ -44,6 +59,21 @@ class ClientProtocol(asyncio.Protocol):
     def connection_lost(self, exception):
         self.server.clients.remove(self)
         print("Соединение разорвано")
+
+    def save_to_history(self, message):
+        self.history.append(f"{message} \r\n")
+
+    def send_history(self, count):
+        l: int = len(self.history)
+        if l > 0:
+            if l < count:
+                count = l
+            self.transport.write(f"Last {count} message(s)\r\n".encode())
+            self.transport.write("-----------------------\r\n".encode())
+            for i in range(-count, 0):
+                self.transport.write(self.history[i].encode())
+            self.transport.write("-----------------------\r\n".encode())
+            self.transport.write(">>> End of history\r\n".encode())
 
 
 class Server:
